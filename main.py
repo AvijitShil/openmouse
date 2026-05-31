@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import argparse
 from dotenv import load_dotenv
 from browser import BrowserEngine
 from vision import PerceptionPipeline
@@ -9,11 +10,24 @@ from brain import BrainController
 load_dotenv()
 
 async def main():
+    parser = argparse.ArgumentParser(description="OpenMouse - AI Browser Automation")
+    parser.add_argument("url", nargs="?", default=None, help="Target website URL (e.g., https://example.com)")
+    parser.add_argument("--objective", "-o", default=None, help="Objective for OpenMouse to execute")
+    args = parser.parse_args()
+
     if not os.getenv("NVIDIA_API_KEY"):
         print("[Error] Missing NVIDIA_API_KEY inside the local .env configuration file.")
         sys.exit(1)
 
-    objective = input("Enter what you want OpenMouse to execute (e.g., 'Click on New Notebook on Kaggle'): ")
+    # Use provided URL, .env value, or prompt
+    target_url = args.url or os.getenv("TARGET_URL")
+    if not target_url:
+        target_url = input("Enter the website URL to navigate to: ").strip()
+
+    # Use provided objective or prompt
+    objective = args.objective
+    if not objective:
+        objective = input("Enter what you want OpenMouse to execute: ").strip()
 
     # Initialize Core Engines
     browser = BrowserEngine()
@@ -21,9 +35,8 @@ async def main():
     brain = BrainController()
 
     page = await browser.initialize()
-    target_url = os.getenv("TARGET_URL", "https://www.kaggle.com")
 
-    print(f"\n[OpenMouse] Navigating to initial system window: {target_url}")
+    print(f"\n[OpenMouse] Navigating to: {target_url}")
     await page.goto(target_url)
     await asyncio.sleep(4)
 
