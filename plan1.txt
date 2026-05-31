@@ -1,0 +1,371 @@
+Here is a highly optimized, production-ready implementation blueprint for **OpenMouse**. This specification is engineered specifically for advanced AI coding assistants (like Claude Code or Minimax) to read, understand, and generate with zero ambiguity.
+
+To achieve **ultra-low latency**, this architecture introduces a **Frame Difference Filter** using pure OpenCV. If the screen hasn't visually changed after an action, it skips the expensive network call to the NVIDIA NIM VLM entirely, maximizing your actions-per-minute (APM).
+
+---
+
+### Expanded Project Architecture
+
+```text
+openmouse/
+├── .env                  # Secure environment credentials
+├── requirements.txt      # Fixed, optimized dependencies
+├── main.py               # Main asynchronous execution loop
+├── browser.py            # High-speed Playwright engine & DOM tracker
+├── vision.py             # Ultra-fast OpenCV preprocessing & YOLO grounding
+└── brain.py              # Resilient NVIDIA NIM JSON interface
+
+```
+
+---
+
+### 1. Environment Configuration (`.env`)
+
+```env
+# NVIDIA NIM API Settings
+NVIDIA_API_KEY=nvapi-YOUR_ACTUAL_API_KEY_HERE
+NVIDIA_NIM_MODEL=meta/llama3-70b-instruct
+
+# Execution Targets
+TARGET_URL=https://www.kaggle.com
+HEADLESS=false
+
+# Latency Tuning Parameters
+LOOP_DELAY_MS=400          # Cooldown wait after taking an action
+FRAME_DIFF_THRESHOLD=0.995 # If frames match > 99.5%, skip VLM processing to save time
+BROWSER_VIEWPORT_W=1280
+BROWSER_VIEWPORT_H=720
+
+```
+
+---
+
+### 2. Dependencies (`requirements.txt`)
+
+```text
+playwright==1.42.0
+opencv-python-headless==4.9.0.80
+ultralytics==8.1.0
+numpy==1.26.0
+python-dotenv==1.0.1
+openai==1.12.0
+pydantic==2.6.1
+
+```
+
+---
+
+### 3. Highly Detailed Production Modules
+
+#### Module A: `browser.py` (Zero-Copy Frame Streamer)
+
+**Goal for the coding agent:** Launch a visible browser instance, provide a clean API to extract screenshot bytes directly to RAM, inject a custom tracking element to show where OpenMouse is aiming, and click/type via coordinate injections.
+
+```python
+import os
+import asyncio
+from playwright.async_api import async_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class BrowserEngine:
+    def __init__(self):
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.headless = os.getenv("HEADLESS", "false").lower() == "true"
+        self.width = int(os.getenv("BROWSER_VIEWPORT_W", 1280))
+        self.height = int(os.getenv("BROWSER_VIEWPORT_H", 720))
+
+    async def initialize(self):
+        """Starts Playwright with an isolated profile and a consistent viewport."""
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=["--disable-blink-features=AutomationControlled"] # Avoid basic bot detection
+        )
+        self.context = await self.browser.new_context()
+        self.page = await self.context.new_page()
+        await self.page.set_viewport_size({"width": self.width, "height": self.height})
+        return self.page
+
+    async def get_frame_bytes(self) -> bytes:
+        """Captures compressed JPEG byte arrays directly to RAM to bypass disk latency."""
+        return await self.page.screenshot(type='jpeg', quality=75)
+
+    async def execute_action(self, action: str, x: int, y: int, text: str = None):
+        """Performs precise headless synthetic actions on target coordinate indices."""
+        # Visual feedback: Render a temporary red tracking crosshair on screen for debugging
+        await self.page.evaluate(f"""() => {{
+            let dot = document.getElementById('openmouse-pointer');
+            if (!dot) {{
+                dot = document.createElement('div');
+                dot.id = 'openmouse-pointer';
+                dot.style.position = 'absolute';
+                dot.style.width = '12px';
+                dot.style.height = '12px';
+                dot.style.borderRadius = '50%';
+                dot.style.backgroundColor = 'red';
+                dot.style.border = '2px solid white';
+                dot.style.zIndex = '100000';
+                dot.style.pointerEvents = 'none';
+                document.body.appendChild(dot);
+            }}
+            dot.style.left = '{x - 6}px';
+            dot.style.top = '{y - 6}px';
+        }}""")
+
+        # Execute physical action mechanics
+        await self.page.mouse.move(x, y, steps=3) # Smooth move step avoids erratic site shifts
+        if action == "click":
+            await self.page.mouse.click(x, y)
+        elif action == "type" and text:
+            await self.page.mouse.click(x, y)
+            # Clear text field safely before writing
+            await self.page.keyboard.press("Control+A")
+            await self.page.keyboard.press("Backspace")
+            await self.page.keyboard.type(text, delay=30) # Fast, realistic keypress interval
+
+    async def shutdown(self):
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+
+```
+
+#### Module B: `vision.py` (The Low-Latency Filter & Core Grounding Engine)
+
+**Goal for the coding agent:** Decode frame bytes instantly into an OpenCV matrix. Use a structural comparison filter against the previous frame to see if an action changed the page. If it did change, tag interactive coordinates sequentially.
+
+```python
+import cv2
+import numpy as np
+import base64
+import os
+from ultralytics import YOLO
+
+class PerceptionPipeline:
+    def __init__(self):
+        # Initialize ultra-lightweight nano model
+        self.model = YOLO('yolov8n.pt') 
+        self.previous_gray_frame = None
+        self.diff_threshold = float(os.getenv("FRAME_DIFF_THRESHOLD", 0.995))
+
+    def is_screen_static(self, current_gray) -> bool:
+        """Compares current frame against the previous frame to avoid running slow logic on static pages."""
+        if self.previous_gray_frame is None:
+            self.previous_gray_frame = current_gray
+            return False
+        
+        # Fast structural pixel variance computation
+        res = cv2.matchTemplate(current_gray, self.previous_gray_frame, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(res)
+        
+        self.previous_gray_frame = current_gray
+        return max_val >= self.diff_threshold
+
+    def process_and_annotate(self, frame_bytes):
+        """Processes raw bytes into actionable base64 strings and spatial mapping coordinates."""
+        nparr = np.frombuffer(frame_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Check if page has actually visually updated since the last run
+        if self.is_screen_static(gray):
+            return None, {} # Signals the main thread to skip the VLM call completely
+
+        coordinates_map = {}
+        results = self.model(img, verbose=False)
+        
+        element_counter = 0
+        for box in results[0].boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            w, h = x2 - x1, y2 - y1
+            
+            # Sanity sizing filters for web interaction points
+            if w > 10 and h > 10:
+                center_x = x1 + (w // 2)
+                center_y = y1 + (h // 2)
+                
+                tag_id = str(element_counter)
+                coordinates_map[tag_id] = (center_x, center_y)
+                
+                # Render explicit Set-of-Mark tags cleanly over items
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 1)
+                cv2.rectangle(img, (x1, y1 - 15), (x1 + 30, y1), (0, 255, 0), -1)
+                cv2.putText(img, tag_id, (x1 + 2, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
+                
+                element_counter += 1
+
+        # High-efficiency base64 encoding straight out of RAM
+        _, buffer = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+        b64_string = base64.b64encode(buffer).decode('utf-8')
+        
+        return b64_string, coordinates_map
+
+```
+
+#### Module C: `brain.py` (Structured NIM Interfacer)
+
+**Goal for the coding agent:** Take the base64 tagged frame payload and objective. Send it to the specified NVIDIA NIM vision model endpoint. Enforce a robust JSON schema to prevent long, chatty text output tokens.
+
+```python
+import os
+import json
+from openai import AsyncOpenAI
+from pydantic import BaseModel, Field
+from typing import Optional
+
+# Enforce explicit structure via Pydantic model for reliable parsing
+class AgentAction(BaseModel):
+    action: str = Field(description="Must be exactly 'click', 'type', or 'wait'")
+    target: Optional[str] = Field(description="The numeric ID string found inside the bounding box tag, or null if waiting")
+    text: Optional[str] = Field(description="The string text value to type, leave blank if clicking")
+    reasoning: str = Field(description="A brief sentence explaining why this step is taken")
+
+class BrainController:
+    def __init__(self):
+        self.client = AsyncOpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=os.getenv("NVIDIA_API_KEY")
+        )
+        self.model = os.getenv("NVIDIA_NIM_MODEL", "meta/llama3-70b-instruct")
+
+    async def request_next_step(self, b64_image: str, objective: str) -> dict:
+        """Queries the NIM VLM with structured json schemas for speed and output reliability."""
+        prompt = (
+            f"Objective: {objective}\n\n"
+            "Analyze the screenshot containing numerical tags. Identify the target item ID to step closer to the objective. "
+            "Respond using the strict JSON schema provided."
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                        ]
+                    }
+                ],
+                # Forcing strict structured outputs minimizes network text generation tokens
+                response_format={"type": "json_object"},
+                temperature=0.1
+            )
+            
+            raw_content = response.choices[0].message.content
+            return json.loads(raw_content)
+        except Exception as e:
+            print(f"[Brain Error] Failed parsing response or calling NIM API: {e}")
+            return {"action": "wait", "target": None, "reasoning": "Fallback due to API parsing issues."}
+
+```
+
+#### Module D: `main.py` (The Async Loop Orchestrator)
+
+**Goal for the coding agent:** Bring all pieces into a stable runtime workflow loop. Handle edge cases where elements are missed, or pages fail to load.
+
+```python
+import asyncio
+import os
+import sys
+from dotenv import load_dotenv
+from browser import BrowserEngine
+from vision import PerceptionPipeline
+from brain import BrainController
+
+load_dotenv()
+
+async def main():
+    if not os.getenv("NVIDIA_API_KEY"):
+        print("[Error] Missing NVIDIA_API_KEY inside the local .env configuration file.")
+        sys.exit(1)
+
+    objective = input("Enter what you want OpenMouse to execute (e.g., 'Click on New Notebook on Kaggle'): ")
+    
+    # Initialize Core Engines
+    browser = BrowserEngine()
+    perception = PerceptionPipeline()
+    brain = BrainController()
+    
+    page = await browser.initialize()
+    target_url = os.getenv("TARGET_URL", "https://www.kaggle.com")
+    
+    print(f"\n[OpenMouse] Navigating to initial system window: {target_url}")
+    await page.goto(target_url)
+    await asyncio.sleep(4) # Allow structural network layers to hydrate fully first
+    
+    print("[OpenMouse] Loop engaged. Press Ctrl+C to terminate operation safely.\n")
+    
+    try:
+        while True:
+            # 1. Grab raw state directly into memory buffers
+            frame_bytes = await browser.get_frame_bytes()
+            
+            # 2. Run fast localized layout updates
+            b64_image, coordinates_map = perception.process_and_annotate(frame_bytes)
+            
+            # 3. Handle Latency-Saving Static States
+            if b64_image is None:
+                print("[OpenMouse Status] Screen is static. Waiting for changes or page loads...")
+                await asyncio.sleep(1.0)
+                continue
+                
+            # 4. Handle Empty Frame edge case
+            if not coordinates_map:
+                print("[OpenMouse Status] No interactive targets found. Waiting to reload layout tags...")
+                await asyncio.sleep(1.5)
+                continue
+
+            # 5. Extract structural next steps via NIM VLM
+            decision = await brain.request_next_step(b64_image, objective)
+            action = decision.get("action")
+            target_id = str(decision.get("target"))
+            text_value = decision.get("text")
+            reasoning = decision.get("reasoning", "No reason provided.")
+            
+            print(f"[Brain Processing] Reason: {reasoning}")
+            print(f"[Action Selected] {action.upper()} -> Target ID Tag: {target_id}")
+
+            # 6. Execute programmatic mouse pointer translation
+            if target_id in coordinates_map:
+                target_x, target_y = coordinates_map[target_id]
+                await browser.execute_action(action, target_x, target_y, text_value)
+            else:
+                print(f"[Warning] Targeted identifier '{target_id}' was missing from the coordinates table map.")
+
+            # Cooldown execution delay padding config
+            cooldown_time = float(os.getenv("LOOP_DELAY_MS", 400)) / 1000.0
+            await asyncio.sleep(cooldown_time)
+
+    except KeyboardInterrupt:
+        print("\n[System Execution Interrupted] OpenMouse autonomous process loop terminating safely.")
+    finally:
+        await browser.shutdown()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+```
+
+---
+
+### Master Execution Prompt for Claude Code / Minimax
+
+You can copy and paste this command block directly into your terminal/AI agent environment to start the automatic development process:
+
+```text
+Please build the full 'openmouse' project sequentially in this directory using the provided low-latency specification. Follow these strict requirements:
+1. Generate .env and requirements.txt exactly as specified.
+2. Implement browser.py handling Playwright in a headed view with explicit viewport parameters.
+3. Implement vision.py using the cv2.matchTemplate logic to serve as a fast frame-difference threshold guard before calling any external APIs.
+4. Implement brain.py utilizing the AsyncOpenAI client structure hitting the integrated NVIDIA NIM endpoint with structured json outputs.
+5. Combine them cleanly in main.py running inside an asynchronous loop context. Ensure invalid dictionary key checks are used everywhere.
+
+```
